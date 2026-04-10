@@ -5,6 +5,12 @@ import "./App.css";
 const API_BASE = "http://localhost:4001";
 const AI_API_BASE = "http://localhost:4000";
 
+const TONE_OPTIONS = [
+  { value: "professional", label: "Professional" },
+  { value: "friendly", label: "Friendly" },
+  { value: "inquisitive", label: "Inquisitive" },
+];
+
 const REPLY_AGENT_SLUGS = {
   post_meeting: {
     professional: "post_meeting_professional",
@@ -120,6 +126,18 @@ function stripHtml(html) {
   return div.innerText.trim();
 }
 
+function getSender(message) {
+  return {
+    name: message?.from?.emailAddress?.name || "Unknown sender",
+    address: message?.from?.emailAddress?.address || "",
+  };
+}
+
+function getPreview(text) {
+  if (!text) return "No preview available.";
+  return text.length > 120 ? `${text.slice(0, 117)}...` : text;
+}
+
 function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [profile, setProfile] = useState(null);
@@ -133,43 +151,39 @@ function App() {
   const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
+    async function checkAuth() {
+      try {
+        setLoading(true);
+        setError("");
+
+        const statusRes = await axios.get(`${API_BASE}/auth/microsoft/status`, {
+          withCredentials: true,
+        });
+
+        setAuthenticated(statusRes.data.authenticated);
+
+        if (statusRes.data.authenticated) {
+          const [profileRes, messagesRes] = await Promise.all([
+            axios.get(`${API_BASE}/me`, {
+              withCredentials: true,
+            }),
+            axios.get(`${API_BASE}/outlook/messages`, {
+              withCredentials: true,
+            }),
+          ]);
+
+          setProfile(profileRes.data);
+          setMessages(messagesRes.data);
+        }
+      } catch {
+        setError("Failed to check auth status");
+      } finally {
+        setLoading(false);
+      }
+    }
+
     checkAuth();
   }, []);
-
-  async function checkAuth() {
-    try {
-      setLoading(true);
-      setError("");
-
-      const statusRes = await axios.get(`${API_BASE}/auth/microsoft/status`, {
-        withCredentials: true,
-      });
-
-      setAuthenticated(statusRes.data.authenticated);
-
-      if (statusRes.data.authenticated) {
-        await Promise.all([loadProfile(), loadMessages()]);
-      }
-    } catch (err) {
-      setError("Failed to check auth status");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function loadProfile() {
-    const res = await axios.get(`${API_BASE}/me`, {
-      withCredentials: true,
-    });
-    setProfile(res.data);
-  }
-
-  async function loadMessages() {
-    const res = await axios.get(`${API_BASE}/outlook/messages`, {
-      withCredentials: true,
-    });
-    setMessages(res.data);
-  }
 
   async function openMessage(id) {
     try {
@@ -182,7 +196,7 @@ function App() {
       });
 
       setSelectedMessage(res.data);
-    } catch (err) {
+    } catch {
       setError("Failed to load message");
     } finally {
       setLoadingMessage(false);
@@ -257,18 +271,41 @@ function App() {
     }
   }
 
+  const selectedMessageId = selectedMessage?.id;
+  const selectedSender = getSender(selectedMessage);
+  const profileName = profile?.displayName || "Microsoft 365 account";
+  const profileEmail = profile?.mail || profile?.userPrincipalName || "";
+
   if (loading) {
-    return <div className="page">Loading...</div>;
+    return (
+      <div className="page">
+        <div className="centerShell">
+          <div className="authCard">
+            <p className="eyebrow">Preparing</p>
+            <h1>Draft Assistant</h1>
+            <p className="supportingText">Loading your workspace...</p>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   if (!authenticated) {
     return (
       <div className="page">
-        <div className="card">
-          <h1>Outlook Draft UI</h1>
-          <p>Connect your Outlook / Microsoft 365 account to continue.</p>
-          <button onClick={connectOutlook}>Connect Outlook</button>
-          {error && <p className="error">{error}</p>}
+        <div className="centerShell">
+          <div className="authCard">
+            <p className="eyebrow">Outlook drafts</p>
+            <h1>Draft Assistant</h1>
+            <p className="supportingText">
+              Connect your Outlook or Microsoft 365 account to load your inbox
+              and generate replies.
+            </p>
+            <button type="button" className="button buttonPrimary" onClick={connectOutlook}>
+              Connect Outlook
+            </button>
+            {error && <div className="errorBanner">{error}</div>}
+          </div>
         </div>
       </div>
     );
@@ -276,112 +313,153 @@ function App() {
 
   return (
     <div className="page">
-      <header className="topbar">
-        <div>
-          <h2>Outlook Draft UI</h2>
-          {profile && (
-            <p>
-              Connected as <strong>{profile.displayName}</strong>
-            </p>
-          )}
-        </div>
-        <button onClick={logout}>Logout</button>
-      </header>
+      <div className="appShell">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">Draft your Emails</p>
+            <h1>Drafty AI</h1>
+            
+          </div>
 
-      {error && <p className="error">{error}</p>}
+          <div className="accountBlock">
+            <span className="accountLabel">Connected as</span>
+            <strong>{profileName}</strong>
+            {profileEmail && <span className="accountEmail">{profileEmail}</span>}
+            <button type="button" className="button buttonSecondary" onClick={logout}>
+              Logout
+            </button>
+          </div>
+        </header>
 
-      <div className="layout">
-        <aside className="sidebar">
-          <h3>Inbox</h3>
-          {messages.map((msg) => (
-            <div
-              key={msg.id}
-              className="messageItem"
-              onClick={() => openMessage(msg.id)}
-            >
-              <strong>{msg.subject || "(No subject)"}</strong>
-              <p>{msg.from?.emailAddress?.name || "Unknown sender"}</p>
-              <small>{msg.bodyPreview}</small>
-            </div>
-          ))}
-        </aside>
+        {error && <div className="errorBanner">{error}</div>}
 
-        <main className="main">
-          {loadingMessage && <p>Loading message...</p>}
-
-          {!loadingMessage && !selectedMessage && (
-            <p>Select an email from the inbox.</p>
-          )}
-
-          {!loadingMessage && selectedMessage && (
-            <div className="card">
-              <h3>{selectedMessage.subject || "(No subject)"}</h3>
-
-              <p>
-                <strong>From:</strong>{" "}
-                {selectedMessage.from?.emailAddress?.name || "Unknown"} (
-                {selectedMessage.from?.emailAddress?.address || "No address"})
-              </p>
-
-              <div
-                className="messageBody"
-                dangerouslySetInnerHTML={{
-                  __html: selectedMessage.body?.content || "",
-                }}
-              />
-
-              <div style={{ marginTop: "24px" }}>
-                <h4>Generate Draft</h4>
-
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "10px",
-                    alignItems: "center",
-                    marginBottom: "12px",
-                    flexWrap: "wrap",
-                  }}
-                >
-                  <select
-                    value={tone}
-                    onChange={(e) => setTone(e.target.value)}
-                    style={{
-                      padding: "10px 12px",
-                      borderRadius: "8px",
-                      border: "1px solid #d1d5db",
-                    }}
-                  >
-                    <option value="professional">Professional</option>
-                    <option value="friendly">Friendly</option>
-                    <option value="inquisitive">Inquisitive</option>
-                  </select>
-
-                  <button onClick={generateDraft} disabled={generating}>
-                    {generating ? "Generating..." : "Generate Draft"}
-                  </button>
-                </div>
-
-                <textarea
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder="Generated draft will appear here..."
-                  style={{
-                    width: "100%",
-                    minHeight: "220px",
-                    padding: "12px",
-                    borderRadius: "10px",
-                    border: "1px solid #d1d5db",
-                    resize: "vertical",
-                    boxSizing: "border-box",
-                    fontFamily: "inherit",
-                    fontSize: "14px",
-                    lineHeight: "1.5",
-                  }}
-                />
+        <div className="layout">
+          <aside className="panel sidebar">
+            <div className="sectionHeader">
+              <div>
+                <h2>Inbox</h2>
+                <p>{messages.length} message{messages.length === 1 ? "" : "s"}</p>
               </div>
             </div>
-          )}
-        </main>
+
+            <div className="messageList">
+              {messages.length === 0 ? (
+                <div className="emptyBox">No messages available.</div>
+              ) : (
+                messages.map((msg) => {
+                  const sender = getSender(msg);
+                  const isActive = selectedMessageId === msg.id;
+
+                  return (
+                    <button
+                      key={msg.id}
+                      type="button"
+                      className={`messageItem${isActive ? " isActive" : ""}`}
+                      onClick={() => openMessage(msg.id)}
+                    >
+                      <span className="messageSubject">
+                        {msg.subject || "(No subject)"}
+                      </span>
+                      <span className="messageSender">{sender.name}</span>
+                      <span className="messagePreview">
+                        {getPreview(msg.bodyPreview)}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </aside>
+
+          <main className="main">
+            {loadingMessage && (
+              <div className="panel statePanel">
+                <h2>Loading message</h2>
+                <p>Fetching the full email thread...</p>
+              </div>
+            )}
+
+            {!loadingMessage && !selectedMessage && (
+              <div className="panel statePanel">
+                <h2>Select an email</h2>
+                <p></p>
+              </div>
+            )}
+
+            {!loadingMessage && selectedMessage && (
+              <div className="detailStack">
+                <section className="panel detailCard">
+                  <div className="detailHeader">
+                    <div>
+                      <p className="eyebrow">Message</p>
+                      <h2>{selectedMessage.subject || "(No subject)"}</h2>
+                    </div>
+
+                    <div className="metaBlock">
+                      <span className="accountLabel">From</span>
+                      <strong>{selectedSender.name}</strong>
+                      <span className="accountEmail">
+                        {selectedSender.address || "No address"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="messageBodyWrap">
+                    <div
+                      className="messageBody"
+                      dangerouslySetInnerHTML={{
+                        __html: selectedMessage.body?.content || "",
+                      }}
+                    />
+                  </div>
+                </section>
+
+                <section className="panel composerCard">
+                  <div className="composerHeader">
+                    <div>
+                      <p className="eyebrow">Reply draft</p>
+                      <h2>Compose response</h2>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="button buttonPrimary"
+                      onClick={generateDraft}
+                      disabled={generating}
+                    >
+                      {generating ? "Generating..." : "Generate Draft"}
+                    </button>
+                  </div>
+
+                  <div className="toneGroup" role="radiogroup" aria-label="Tone">
+                    {TONE_OPTIONS.map((option) => {
+                      const isActive = tone === option.value;
+
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          className={`toneChip${isActive ? " isActive" : ""}`}
+                          onClick={() => setTone(option.value)}
+                          aria-pressed={isActive}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <textarea
+                    className="draftInput"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    placeholder="Generated draft will appear here..."
+                  />
+                </section>
+              </div>
+            )}
+          </main>
+        </div>
       </div>
     </div>
   );
